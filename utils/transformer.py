@@ -4,8 +4,8 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn import Linear, LayerNorm
 
-from multihead_attention import MultiheadAttention
-from position_embedding import SinusoidalPositionalEmbedding
+from utils.multihead_attention import MultiheadAttention
+from utils.position_embedding import SinusoidalPositionalEmbedding
 
 
 class TransformerEncoder(nn.Module):

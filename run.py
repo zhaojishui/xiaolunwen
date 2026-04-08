@@ -1,215 +1,183 @@
+import gc
 import logging
+import os
+import time
+from pathlib import Path
 import numpy as np
+import pandas as pd
 import torch
-import torch.nn as nn
-from torch import optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from tqdm import tqdm
-def dict_to_str(src_dict):
-    dst_str = ""
-    for key in src_dict.keys():
-        dst_str += " %s: %.4f " %(key, src_dict[key])
-    return dst_str
+from config.config import get_config_regression
+from utils.ATIO import ATIO
+from utils.dataset import MMDataLoader
 
-logger = logging.getLogger('MMSA')
+from utils.functions import assign_gpu, setup_seed
+from StudentModel import student
+from TeacherModel import teacher
+from utils.metric import softmax
+import sys
 
-def do_train(self, model, dataloader, return_epoch_results=False):
-    # 0: DLF model
-    params = model[0].parameters()
+from datetime import datetime
 
-    optimizer = optim.Adam(params, lr=self.args.learning_rate)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=self.args.patience)
+now = datetime.now()
+format = "%Y/%m/%d %H:%M:%S"
+formatted_now = now.strftime(format)  # 把 datetime 对象，按指定格式，转成字符串
+formatted_now = str(formatted_now) + " - "  # 字符串拼接
 
-    epochs, best_epoch = 0, 0
-    if return_epoch_results:
-        epoch_results = {
-            'train': [],
-            'valid': [],
-            'test': []
-        }
-    min_or_max = 'min' if self.args.KeyEval in [
-        'Loss'] else 'max'  # ['Loss']是一个列表，self.args.KeyEval如果有Loss，则 min_or_max = 'min'
-    best_valid = 1e8 if min_or_max == 'min' else 0
-
-    net = []
-    net_DLF = model[0]
-    net.append(net_DLF)
-    model = net
-
-    while True:
-        epochs += 1
-        y_pred, y_true = [], []
-        for mod in model:
-            mod.train()
-
-        train_loss = 0.0
-        left_epochs = self.args.update_epochs  # 10
-        with tqdm(dataloader['train']) as td:
-            for batch_data in td:  # batchsize_size=16
-
-                if left_epochs == self.args.update_epochs:
-                    optimizer.zero_grad()
-                left_epochs -= 1
-                vision = batch_data['vision'].to(self.args.device)
-                audio = batch_data['audio'].to(self.args.device)
-                text = batch_data['text'].to(self.args.device)
-                labels = batch_data['labels']['M'].to(self.args.device)
-                labels = labels.view(-1, 1)
-
-                output = model[0](text, audio, vision)
-
-                # task loss
-                loss_task_all = self.criterion(output['output_logit'], labels)
-
-                loss_task_l_hetero = self.criterion(output['logits_l_hetero'], labels)
-                loss_task_v_hetero = self.criterion(output['logits_v_hetero'], labels)
-                loss_task_a_hetero = self.criterion(output['logits_a_hetero'], labels)
-                loss_task_c = self.criterion(output['logits_c'], labels)
-
-                # total MSA loss L_msa
-                loss_task = 1 * (
-                            1 * loss_task_all + 1 * loss_task_c + 3 * loss_task_l_hetero + 1 * loss_task_v_hetero + 1 * loss_task_a_hetero)
-
-                # reconstruction loss L_r
-                loss_recon_l = self.MSE(output['recon_l'], output['origin_l'])
-                loss_recon_v = self.MSE(output['recon_v'], output['origin_v'])
-                loss_recon_a = self.MSE(output['recon_a'], output['origin_a'])
-                loss_recon = loss_recon_l + loss_recon_v + loss_recon_a
-
-                # specific loss L_s
-                loss_sl_slr = self.MSE(output['s_l'].permute(1, 2, 0), output['s_l_r'])  # permute变换视角
-                loss_sv_slv = self.MSE(output['s_v'].permute(1, 2, 0), output['s_v_r'])
-                loss_sa_sla = self.MSE(output['s_a'].permute(1, 2, 0), output['s_a_r'])
-                loss_s_sr = loss_sl_slr + loss_sv_slv + loss_sa_sla
-
-                # ort loss L_o
-                if self.args.dataset_name == 'mosi':
-                    num = 50
-                elif self.args.dataset_name == 'mosei':
-                    num = 10
-
-                cosine_similarity_s_c_l = self.cosine(output['s_l'].reshape(-1, num), output['c_l'].reshape(-1, num),
-                                                      torch.tensor([-1]).cuda())  # 标签是-1，最小化它们之间的余弦相似度。
-                cosine_similarity_s_c_v = self.cosine(output['s_v'].reshape(-1, num), output['c_v'].reshape(-1, num),
-                                                      torch.tensor([-1]).cuda())
-                cosine_similarity_s_c_a = self.cosine(output['s_a'].reshape(-1, num), output['c_a'].reshape(-1, num),
-                                                      torch.tensor([-1]).cuda())
-
-                loss_ort = cosine_similarity_s_c_l + cosine_similarity_s_c_v + cosine_similarity_s_c_a
-
-                # triplet margin loss L_m
-                c_l, c_v, c_a = output['c_l_sim'], output['c_v_sim'], output['c_a_sim']
-                ids, feats = [], []
-                for i in range(labels.size(0)):
-                    feats.append(c_l[i].view(1, -1))
-                    feats.append(c_v[i].view(1, -1))
-                    feats.append(c_a[i].view(1, -1))
-                    ids.append(labels[i].view(1, -1))
-                    ids.append(labels[i].view(1, -1))
-                    ids.append(labels[i].view(1, -1))
-                feats = torch.cat(feats, dim=0)
-                ids = torch.cat(ids, dim=0)
-                loss_sim = self.sim_loss(ids, feats)
-
-                # overall loss L_DLF
-                combined_loss = loss_task + (loss_s_sr + loss_recon + (loss_sim + loss_ort) * 0.1) * 0.1
-
-                combined_loss.backward()
-
-                if self.args.grad_clip != -1.0:
-                    params = list(model[0].parameters())
-
-                    nn.utils.clip_grad_value_(params, self.args.grad_clip)
-
-                train_loss += combined_loss.item()
-
-                y_pred.append(output['output_logit'].cpu())
-                y_true.append(labels.cpu())
-                if not left_epochs:
-                    optimizer.step()
-                    left_epochs = self.args.update_epochs
-            if not left_epochs:
-                # update
-                optimizer.step()
-
-        train_loss = train_loss / len(dataloader['train'])
-        pred, true = torch.cat(y_pred), torch.cat(y_true)
-        train_results = self.metrics(pred, true)
-        logger.info(
-            f">> Epoch: {epochs} "
-            f"TRAIN -({self.args.model_name}) [{epochs - best_epoch}/{epochs}/{self.args.cur_seed}] "
-            f">> total_loss: {round(train_loss, 4)} "
-            f"{dict_to_str(train_results)}"
-        )
-        # validation
-        val_results = self.do_test(model[0], dataloader['valid'], mode="VAL")
-        test_results = self.do_test(model[0], dataloader['test'], mode="TEST")
-        cur_valid = val_results[self.args.KeyEval]
-        scheduler.step(val_results['Loss'])
-        # save each epoch model
-        torch.save(model[0].state_dict(),
-                   './MOSIxunlianjieguo/' + str(self.args.dataset_name) + '_' + str(epochs) + '.pth')
-        # save best model
-        isBetter = cur_valid <= (best_valid - 1e-6) if min_or_max == 'min' else cur_valid >= (best_valid + 1e-6)
-        if isBetter:
-            best_valid, best_epoch = cur_valid, epochs
-            # save model
-            model_save_path = './MOSIxunlianjieguo/DLF' + str(self.args.dataset_name) + '.pth'
-            torch.save(model[0].state_dict(), model_save_path)
-
-        if return_epoch_results:
-            train_results["Loss"] = train_loss
-            epoch_results['train'].append(train_results)
-            epoch_results['valid'].append(val_results)
-            test_results = self.do_test(model, dataloader['test'], mode="TEST")
-            epoch_results['test'].append(test_results)
-        # early stop
-        if epochs - best_epoch >= self.args.early_stop:
-            return epoch_results if return_epoch_results else None
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # 固定写法，固定 GPU 编号顺序，避免多卡环境下设备映射混乱
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:2"  # 固定写法，强制 cuBLAS 使用确定性算法，提高实验结果可复现性
+logger = logging.getLogger(
+    'MMSA')  # 查找一个名字叫 "MMSA" 的 Logger,如果已经存在 → 直接返回（单例）,如果不存在 → 创建一个新的 Logger 并返回,logging.getLogger是固定写法
 
 
-def do_test(self, model, dataloader, mode="VAL", return_sample_results=False):
-    model.eval()
-    y_pred, y_true = [], []
+def _set_logger(log_dir, model_name, dataset_name, verbose_level):
+    # base logger,根据传进来的log_dir在加上model_name, dataset_name构造出一条路径，
+    log_file_path = Path(log_dir) / f"{model_name}-{dataset_name}.log"
+    logger = logging.getLogger('MMSA')
+    logger.setLevel(logging.DEBUG)  # logging.DEBUG是固定写法，当然还有其它的
 
-    eval_loss = 0.0
-    if return_sample_results:
-        ids, sample_results = [], []
-        all_labels = []
-        features = {
-            "Feature_t": [],
-            "Feature_a": [],
-            "Feature_v": [],
-            "Feature_f": [],
-        }
+    # file handler，上一段代码建立了一个日志路径，这段代码应用这个日志执行处理操作,
+    fh = logging.FileHandler(log_file_path)  # ！！！！！！！！注意log_file_path长什么样，带‘’号
+    fh_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s [%(levelname)s] - %(message)s')  # name是 logger = logging.getLogger('MMSA')中的MMSA
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fh_formatter)
+    logger.addHandler(fh)  # MMSA的日志的保存路径是 log_file_path，处理方法是fh
+    # 先建立一个logger，再建立一个文件处理器fh，最后用logger.addHandler把fh加入进去。
+    # stream handler，以下这段代码的作用是根据用户指定的 verbose_level，控制终端里打印多少日志，并规定打印格式”
+    stream_level = {0: logging.ERROR, 1: logging.INFO, 2: logging.DEBUG}
+    ch = logging.StreamHandler()  ## StreamHandler()是写入控制台的。logging.FileHandler是写入对应文件的。
+    ch.setLevel(stream_level[verbose_level])
+    ch_formatter = logging.Formatter(
+        '%(name)s - %(message)s')  # 按照 "%(name)s - %(message)s" 的格式打印到终端，%(name)s是建立logging.getLogger(__name__)时所起的名字
+    ch.setFormatter(ch_formatter)
+    logger.addHandler(ch)  # MMSA的日志输出到控制台时遵循ch方法
 
-    with torch.no_grad():
-        with tqdm(dataloader) as td:
-            for batch_data in td:  # 这里就是一次性取batch_size个数据。
-                vision = batch_data['vision'].to(self.args.device)
-                audio = batch_data['audio'].to(self.args.device)
-                text = batch_data['text'].to(self.args.device)
-                labels = batch_data['labels']['M'].to(self.args.device)
-                labels = labels.view(-1, 1)  # 形状变成（64，1）
-                output = model(text, audio, vision)
-                loss = self.criterion(output['output_logit'], labels)
-                eval_loss += loss.item()  # item（）Returns the value of this tensor as a standard Python number
-                y_pred.append(output['output_logit'].cpu())
-                y_true.append(labels.cpu())
+    return logger
 
-    eval_loss = eval_loss / len(dataloader)  # 这个 dataloader 一共会返回多少个 batch（循环会跑多少次），用于计算整个流程的平均 loss
-    pred, true = torch.cat(y_pred), torch.cat(y_true)
 
-    eval_results = self.metrics(pred, true)
-    eval_results["Loss"] = round(eval_loss, 4)  # 保留eval_loss的4位小数。
-    logger.info(f"{mode}-({self.args.model_name}) >> {dict_to_str(eval_results)}")
+def DLF_run(
+        model_name, dataset_name, config=None, config_file="", seeds=[], is_tune=False,
+        tune_times=500, feature_T="", feature_A="", feature_V="",
+        model_save_dir="", res_save_dir="", log_dir="",
+        gpu_ids=[0], num_workers=1, verbose_level=1, mode='', is_training=False
+        # 运行train代码调用这个函数时传入is_training=true，即确实是训练模式
+):  # 调用这个函数时，里面的参数有一部分可能指定，也可能没有指定
+    # Initialization
+    model_name = model_name.upper()
+    dataset_name = dataset_name.lower()
 
-    if return_sample_results:
-        eval_results["Ids"] = ids
-        eval_results["SResults"] = sample_results
-        for k in features.keys():
-            features[k] = np.concatenate(features[k], axis=0)
-        eval_results['Features'] = features
-        eval_results['Labels'] = all_labels
+    if config_file != "":  # 说明函数的参数也可以是一个文件
+        config_file = Path(config_file)
+    else:  # use default config files
+        config_file = Path(__file__).parent / "config" / "config.json"
+    if not config_file.is_file():  # p.is_file()     # 判断是不是文件，Path类中的方法
+        raise ValueError(f"Config file {str(config_file)} not found.")
+    if model_save_dir == "":  # 这里开始判断dlf-run函数的其他参数是否是空的
+        model_save_dir = Path.home() / "MMSA" / "saved_models"
+    Path(model_save_dir).mkdir(parents=True, exist_ok=True)  # 沿指定路径创建saved_models目录。
+    if res_save_dir == "":
+        res_save_dir = Path.home() / "MMSA" / "results"
+    Path(res_save_dir).mkdir(parents=True, exist_ok=True)
+    if log_dir == "":
+        log_dir = Path.home() / "MMSA" / "logs"
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
+    seeds = seeds if seeds != [] else [1111, 1112, 1113, 1114, 1115]
+    logger = _set_logger(log_dir, model_name, dataset_name,
+                         verbose_level)  # 函数_set_logger的参数在运行DLF_run时被传入，作为DLF_run函数参数的一部分
+    config_file=str(config_file)
+    args = get_config_regression(model_name, dataset_name,config_file)  # 这个函数get_config_regression的参数也作为DLF_run参数的一部分。默认情况下config路径是config_file = Path(__file__).parent / "config" / "config.json"
+    args.is_training = is_training  # 上面的model的名字是DLF，args是一个能用点号访问的字典，也能用点号新增键值对，比如这两句代码，运行train代码时args新增属性is_training，值是true
+    args.mode = mode  # train or test
+    args['model_save_path'] = Path(
+        model_save_dir) / f"{args['model_name']}-{args['dataset_name']}.pth"  # model_save_dir="MOSEIxunlianjieguo",
+    args['device'] = assign_gpu(gpu_ids)
+    args['train_mode'] = 'regression'
+    args['feature_T'] = feature_T
+    args['feature_A'] = feature_A
+    args['feature_V'] = feature_V
+    if config:  # train代码中运行dlf——run中config默认是空，所以config=none，此代码不执行。
+        args.update(config)
 
-    return eval_results
+    res_save_dir = Path(res_save_dir) / "normal"
+    res_save_dir.mkdir(parents=True, exist_ok=True)
+    model_results = []  # 在 Python 里创建（初始化）一个空列表。
+    for i, seed in enumerate(seeds):  #
+        setup_seed(seed)
+        args['cur_seed'] = i + 1  # args是一个字典
+        result = _run(args, num_workers, is_tune)  # 字典也可以作为一个参数传入函数，默认is_tune是False，运行train代码时is_tunr是true
+        model_results.append(result)
+    if args.is_training:  # 运行train代码时执行此条代码
+        criterions = list(model_results[0].keys())
+        # save result to csv
+        csv_file = res_save_dir / f"{dataset_name}.csv"  # 后缀是csv而已，具体是不是还是要看里面的内容。
+        if csv_file.is_file():
+            df = pd.read_csv(csv_file)
+        else:
+            df = pd.DataFrame(columns=["Time"] + ["Model"] + criterions)
+        # save results
+        res = [model_name]
+        for c in criterions:
+            values = [r[c] for r in model_results]
+            mean = round(np.mean(values) * 100, 2)
+            std = round(np.std(values) * 100, 2)
+            res.append((mean, std))
+
+        res = [formatted_now] + res
+        df.loc[len(df)] = res
+        df.to_csv(csv_file, index=None)
+        logger.info(f"Results saved to {csv_file}.")
+
+
+def _run(args, num_workers=4, is_tune=False, from_sena=False):
+    dataloader = MMDataLoader(args, num_workers)  # 调用函数_run时传入args是一个字典，因此这里args仍然是一个字典
+    # 这里把某个数据集的train，valid，test部分全部准备好
+    if args.is_training:  # 运行train代码时此代码执行
+        print("training for DLF")
+
+        args.gd_size_low = 64  # args字典增加下列参数
+        args.w_losses_low = [1, 10]
+        args.metric_low = 'l1'
+
+        args.gd_size_high = 32
+        args.w_losses_high = [1, 10]
+        args.metric_high = 'l1'
+
+        to_idx = [0, 1, 2]
+        from_idx = [0, 1, 2]
+        assert len(from_idx) >= 1  # 断言，from_idx 这个列表至少包含 1 个元素，否则程序就报错。assert后面的表达式为真，程序继续执行，否则断言失败，则报错
+
+        model = []
+        net_student=getattr(student, 'studentmodel')(args)  # DLF.py 文件中取出类 DLF，然后用 args 创建这个类的实例，从DLF.py文件里面获取DLF这个类，并实例化。
+        net_teacher=getattr(teacher, 'teachermodel')(args)
+
+        net_student=net_student.cuda()  # 把模型从 CPU 移到 GPU 上，以便用显卡加速计算
+        net_teacher = net_teacher.cuda()
+        model = [net_student, net_teacher]
+    else:
+        print("testing phase for studentmodel")
+        model = getattr(student, 'studentmodel')(args)
+        model = model.cuda()
+
+      # ATIO()相当于实例化类ATIO()的对象，然后由对象去调用类的方法。
+    trainer = ATIO().getTrain(args)
+    # test
+    if args.mode == 'test':
+        model.load_state_dict(torch.load('./MOSIxunlianjieguo/DLF' + str(args.dataset_name) + '.pth'),
+                              strict=False)  # 加载保存的模型。
+        results = trainer.do_test(model, dataloader['test'], mode="TEST")
+        sys.stdout.flush()  # 把还没显示的输出内容立刻打印出来，不再等待
+        input('[Press Any Key to start another run]')
+    # train
+    else:
+
+        epoch_results = trainer.do_train(model, dataloader,
+                                         return_epoch_results=from_sena)  # model = [model_DLF]，这里model是一个列表。
+        model[0].load_state_dict(torch.load('./MOSIxunlianjieguo/DLF' + str(args.dataset_name) + '.pth'))
+
+        results = trainer.do_test(model[0], dataloader['test'], mode="TEST")
+
+        del model
+        torch.cuda.empty_cache()
+        gc.collect()
+        time.sleep(1)
+    return results

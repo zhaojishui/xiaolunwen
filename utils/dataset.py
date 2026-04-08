@@ -10,11 +10,11 @@ __all__ = ['MMDataLoader']
 class MMDataset(Dataset):
     def __init__(self, args, mode='train'):
         self.mode = mode
-        self.train_mode = args['base']['train_mode']
-        self.datasetName = args['dataset']['datasetName']
-        self.dataPath = args['dataset']['dataPath']
-        self.missing_rate_eval_test = args['base']['missing_rate_eval_test']
-        self.missing_seed = args['base']['seed']
+        self.train_mode = args['train_mode']
+        self.datasetName = args['dataset_name']
+        self.dataPath = args['featurePath']
+        self.missing_rate_eval_test = args['missing_rate_eval_test']
+        self.missing_seed = args['missing_seed']
 
         DATA_MAP = {
             'mosi': self.__init_mosi,
@@ -183,7 +183,7 @@ class MMDataset(Dataset):
         return sample
 
 
-def MMDataLoader(args):
+def MMDataLoader(args, num_workers):
     datasets = {
         'train': MMDataset(args, mode='train'),
         'valid': MMDataset(args, mode='valid'),
@@ -192,8 +192,8 @@ def MMDataLoader(args):
 
     dataLoader = {
         ds: DataLoader(datasets[ds],
-                       batch_size=args['base']['batch_size'],
-                       num_workers=args['base']['num_workers'],
+                       batch_size=args['batch_size'],
+                       num_workers=args['num_workers'],
                        shuffle=True if ds == 'train' else False)  # 每轮epoch都会打乱顺序。
         for ds in datasets.keys()
     }
@@ -205,8 +205,8 @@ def MMDataEvaluationLoader(args):
     datasets = MMDataset(args, mode='test')
 
     dataLoader = DataLoader(datasets,
-                            batch_size=args['base']['batch_size'],
-                            num_workers=args['base']['num_workers'],
+                            batch_size=args['batch_size'],
+                            num_workers=args['num_workers'],
                             shuffle=False)
 
     return dataLoader
