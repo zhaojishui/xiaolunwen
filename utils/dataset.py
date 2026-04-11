@@ -56,7 +56,7 @@ class MMDataset(Dataset):
 
             for i in range(3):
                 sample_idx = random.sample([i for i in range(len(missing_rate[i]))], int(len(missing_rate[i]) / 2))
-                missing_rate[i][sample_idx] = 0
+                missing_rate[i][sample_idx] = 0#这一步的操作表明每个样本一半的数据都置0。表示哪些地方没有缺失，置0的才表示没有缺失。
 
             self.labels['missing_rate_l'] = missing_rate[0]
             self.labels['missing_rate_a'] = missing_rate[1]
@@ -64,14 +64,14 @@ class MMDataset(Dataset):
 
         else:
             missing_rate = [
-                self.missing_rate_eval_test * np.ones((len(data[self.mode][self.train_mode + '_labels']), 1)) for i in
+                self.missing_rate_eval_test * np.ones((len(data[self.mode][self.train_mode + '_labels']), 1)) for i in#用于评估和测试
                 range(3)]
             self.labels['missing_rate_l'] = missing_rate[0]
             self.labels['missing_rate_a'] = missing_rate[1]
-            self.labels['missing_rate_v'] = missing_rate[2]
+            self.labels['missing_rate_v'] = missing_rate[2]#这里missing_rate本身是一个列表。
 
-        self.text_m, self.text_length, self.text_mask, self.text_missing_mask = self.generate_m(self.text[:, 0, :],
-                                                                                                self.text[:, 1, :],
+        self.text_m, self.text_length, self.text_mask, self.text_missing_mask = self.generate_m(self.text[:, 0, :],#text[:, 0, :]表示input-ids，text[:, 1, :]表示attention_mask！！！！
+                                                                                                self.text[:, 1, :],#text[:, 1, :]表示attention_mask，如果是mosi，形状是（1284，50），和text的第一，第三维度相同。
                                                                                                 None,
                                                                                                 missing_rate[0],
                                                                                                 self.missing_seed,
@@ -106,23 +106,18 @@ class MMDataset(Dataset):
         elif mode == 'audio' or mode == 'vision':
             input_mask = np.array([np.array([1] * length + [0] * (modality.shape[1] - length)) for length in input_len])
         np.random.seed(missing_seed)
-        missing_mask = (np.random.uniform(size=input_mask.shape) > missing_rate.repeat(input_mask.shape[1],
-                                                                                       1)) * input_mask  # 比大小获得bool矩阵。true变成1，false变成0，因此missing_mask是一个由1，0组成的矩阵。
-
-        assert missing_mask.shape == input_mask.shape
+        missing_mask = (np.random.uniform(size=input_mask.shape) > missing_rate.repeat(input_mask.shape[1],1)) * input_mask  # 比大小获得bool矩阵。true变成1，false变成0，因此missing_mask是一个由1，0组成的矩阵。
+        # input_mask.shape[1]是重复的次数，1是维度，表明 missing_rate要在哪个维度上重复。1)).上面的这一行代码是在构建缺失掩码，表明哪些地方缺失率太高就不关注了。哪些地方虽然有缺失，但是mask是1，仍然可以关注。
+        assert missing_mask.shape == input_mask.shape#这么做就是后续text还要送入bert模型去处理。如果只是简单的把text的某些维度的值置0，attention-mask没有修改，那它怎么能送入bert模型进行处理呢？
 
         if mode == 'text':
             # CLS SEG Token unchanged.
             for i, instance in enumerate(missing_mask):
-                instance[0] = instance[input_len[
-                                           i] - 1] = 1  # 这是把1赋值给两个变量，即 instance[0]，instance[input_len[i] - 1]，每执行一次for循环，就会改变一个样本，一直到最后一个样本。
-
-            modality_m = missing_mask * modality + (100 * np.ones_like(modality)) * (
-                        input_mask - missing_mask)  # UNK token: 100.input_mask也就是attention_mask，它的1的个数要多余missing_mask，padding的部分两者都是0，input_mask中部分1变成0就成为了missing_mask。
-        elif mode == 'audio' or mode == 'vision':
-            modality_m = missing_mask.reshape(modality.shape[0], modality.shape[1],
-                                              1) * modality  # 某一帧被mask → 整个709维/33维全部变0，按时间步（帧）进行mask
-
+                instance[0] = instance[input_len[i] - 1] = 1  # 这是把1赋值给两个变量，即 instance[0]，instance[input_len[i] - 1]，每执行一次for循环，就会改变一个样本，一直到最后一个样本。input_len[i]表示第i个样本序列的长度。
+                modality_m = missing_mask * modality + (100 * np.ones_like(modality)) * (input_mask - missing_mask)  # UNK token: 100.input_mask也就是attention_mask，它的1的个数要多余missing_mask，padding的部分两者都是0，input_mask中部分1变成0就成为了missing_mask。
+        elif mode == 'audio' or mode == 'vision':#missing_mask * modality使得缺失的地方变成0，没有缺失的地方还是原来的数字。加上(100 * np.ones_like(modality)) * (input_mask - missing_mask) 就使得缺失的地方变成100了。
+                modality_m = missing_mask.reshape(modality.shape[0], modality.shape[1], 1) * modality  # 某一帧被mask → 整个709维/33维全部变0，按时间步（帧）进行mask
+                #如果不resahpe，那么就无法和modality做广播，也就无法做乘法。
         return modality_m, input_len, input_mask, missing_mask
 
     def __len__(self):
@@ -194,7 +189,7 @@ def MMDataLoader(args, num_workers):
         ds: DataLoader(datasets[ds],
                        batch_size=args['batch_size'],
                        num_workers=args['num_workers'],
-                       shuffle=True if ds == 'train' else False)  # 每轮epoch都会打乱顺序。
+                       shuffle=True)  # 每轮epoch都会打乱顺序。
         for ds in datasets.keys()
     }
 

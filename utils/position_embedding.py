@@ -15,9 +15,14 @@ def make_positions(tensor, padding_idx, left_pad):
         setattr(make_positions, buf_name, tensor.new())
     setattr(make_positions, buf_name, getattr(make_positions, buf_name).type_as(tensor))
     if getattr(make_positions, buf_name).numel() < max_pos:
-        torch.arange(padding_idx + 1, max_pos, out=getattr(make_positions, buf_name))
+        setattr(
+            make_positions,
+            buf_name,
+            torch.arange(padding_idx + 1, max_pos, device=tensor.device)
+        )
     mask = tensor.ne(padding_idx)
     positions = getattr(make_positions, buf_name)[:tensor.size(1)].expand_as(tensor)
+    positions = positions.type_as(tensor)
     if left_pad:
         positions = positions - mask.size(1) + mask.long().sum(dim=1).unsqueeze(1)
     new_tensor = tensor.clone()

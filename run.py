@@ -9,13 +9,13 @@ import torch
 from config.config import get_config_regression
 from utils.ATIO import ATIO
 from utils.dataset import MMDataLoader
-
+from pathlib import Path
 from utils.functions import assign_gpu, setup_seed
 from StudentModel import student
 from TeacherModel import teacher
 from utils.metric import softmax
 import sys
-
+from teacherrun import studentmodel
 from datetime import datetime
 
 now = datetime.now()
@@ -58,7 +58,7 @@ def _set_logger(log_dir, model_name, dataset_name, verbose_level):
 def DLF_run(
         model_name, dataset_name, config=None, config_file="", seeds=[], is_tune=False,
         tune_times=500, feature_T="", feature_A="", feature_V="",
-        model_save_dir="", res_save_dir="", log_dir="",
+         res_save_dir="", log_dir="",
         gpu_ids=[0], num_workers=1, verbose_level=1, mode='', is_training=False
         # 运行train代码调用这个函数时传入is_training=true，即确实是训练模式
 ):  # 调用这个函数时，里面的参数有一部分可能指定，也可能没有指定
@@ -72,9 +72,7 @@ def DLF_run(
         config_file = Path(__file__).parent / "config" / "config.json"
     if not config_file.is_file():  # p.is_file()     # 判断是不是文件，Path类中的方法
         raise ValueError(f"Config file {str(config_file)} not found.")
-    if model_save_dir == "":  # 这里开始判断dlf-run函数的其他参数是否是空的
-        model_save_dir = Path.home() / "MMSA" / "saved_models"
-    Path(model_save_dir).mkdir(parents=True, exist_ok=True)  # 沿指定路径创建saved_models目录。
+
     if res_save_dir == "":
         res_save_dir = Path.home() / "MMSA" / "results"
     Path(res_save_dir).mkdir(parents=True, exist_ok=True)
@@ -88,8 +86,6 @@ def DLF_run(
     args = get_config_regression(model_name, dataset_name,config_file)  # 这个函数get_config_regression的参数也作为DLF_run参数的一部分。默认情况下config路径是config_file = Path(__file__).parent / "config" / "config.json"
     args.is_training = is_training  # 上面的model的名字是DLF，args是一个能用点号访问的字典，也能用点号新增键值对，比如这两句代码，运行train代码时args新增属性is_training，值是true
     args.mode = mode  # train or test
-    args['model_save_path'] = Path(
-        model_save_dir) / f"{args['model_name']}-{args['dataset_name']}.pth"  # model_save_dir="MOSEIxunlianjieguo",
     args['device'] = assign_gpu(gpu_ids)
     args['train_mode'] = 'regression'
     args['feature_T'] = feature_T
@@ -152,7 +148,7 @@ def _run(args, num_workers=4, is_tune=False, from_sena=False):
 
         net_student=net_student.cuda()  # 把模型从 CPU 移到 GPU 上，以便用显卡加速计算
         net_teacher = net_teacher.cuda()
-        model = [net_student, net_teacher]
+        model = [net_student, net_teacher]#model[0]是学生，model[1]是老师。
     else:
         print("testing phase for studentmodel")
         model = getattr(student, 'studentmodel')(args)
@@ -162,22 +158,19 @@ def _run(args, num_workers=4, is_tune=False, from_sena=False):
     trainer = ATIO().getTrain(args)
     # test
     if args.mode == 'test':
-        model.load_state_dict(torch.load('./MOSIxunlianjieguo/DLF' + str(args.dataset_name) + '.pth'),
-                              strict=False)  # 加载保存的模型。
+        base = Path(r'F:\zhengliuxiangmu\studentxunlianjieguo')
+        best_path = base / 'mosi' / 'best_model.pth'
+        model.load_state_dict(torch.load(best_path),strict=False)  # 加载保存的模型。best_path = os.path.join(save_dir, "best_model.pth")
         results = trainer.do_test(model, dataloader['test'], mode="TEST")
         sys.stdout.flush()  # 把还没显示的输出内容立刻打印出来，不再等待
         input('[Press Any Key to start another run]')
+        return results
     # train
     else:
-
-        epoch_results = trainer.do_train(model, dataloader,
-                                         return_epoch_results=from_sena)  # model = [model_DLF]，这里model是一个列表。
-        model[0].load_state_dict(torch.load('./MOSIxunlianjieguo/DLF' + str(args.dataset_name) + '.pth'))
-
-        results = trainer.do_test(model[0], dataloader['test'], mode="TEST")
-
+        trainer.do_train(model, dataloader,return_epoch_results=from_sena)  # model = [model_DLF]，这里model是一个列表。
+        #model[0].load_state_dict(torch.load('./MOSIxunlianjieguo/DLF' + str(args.dataset_name) + '.pth'))
+        #results = trainer.do_test(model[0], dataloader['test'], mode="TEST")
         del model
         torch.cuda.empty_cache()
         gc.collect()
         time.sleep(1)
-    return results

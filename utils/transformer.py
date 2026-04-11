@@ -166,6 +166,12 @@ class TransformerEncoderLayer(nn.Module):
         x = residual + x
         x = self.maybe_layer_norm(1, x, after=True)
         return x
+    def maybe_layer_norm(self, i, x, before=False, after=False):
+        assert before ^ after   #before XOR after, allow only one is true
+        if after ^ self.normalize_before:#只有after=False，normalize_before=true，做归一化。after=true，normalize_before=false，做归一化
+            return self.layer_norms[i](x)
+        else:
+            return x
 def fill_with_neg_inf(t):
     """FP16-compatible function that fills a tensor with -inf."""
     return t.float().fill_(float('-inf')).type_as(t)

@@ -215,8 +215,7 @@ class studentmodel(nn.Module):
         recon_v = recon_v.permute(2, 0, 1)
         recon_a = recon_a.permute(2, 0, 1)
 
-        s_l_r = self.encoder_s_l(recon_l).permute(1, 2,
-                                                  0)  # encoder_s_l是一个transformer，要求输入的形状是（src_len，batch，embed_dim），再经过permute(1, 2, 0)，形状变成：batch，embed_dim，src_len
+        s_l_r = self.encoder_s_l(recon_l).permute(1, 2,0)  # encoder_s_l是一个transformer，要求输入的形状是（src_len，batch，embed_dim），再经过permute(1, 2, 0)，形状变成：batch，embed_dim，src_len
         s_v_r = self.encoder_s_v(recon_v).permute(1, 2, 0)
         s_a_r = self.encoder_s_a(recon_a).permute(1, 2, 0)
 

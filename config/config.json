@@ -68,7 +68,7 @@
         "output_dropout": 0.5,
         "grad_clip": 0.6,
         "patience": 5,
-        "weight_decay": 0.005,
+        "weight_decay": 1e-4,
         "transformers": "bert",
         "pretrained": "bert-base-uncased"
       },
@@ -101,6 +101,6 @@
           "train_mode": "regression",
           "seed": 1111,
           "batch_size": 16,
-          "num_workers":8
+          "num_workers":0
   }
   }

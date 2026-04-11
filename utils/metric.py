@@ -36,15 +36,14 @@ class MetricsTop():
         test_truth_a7 = np.clip(test_truth, a_min=-3., a_max=3.)
         test_preds_a5 = np.clip(test_preds, a_min=-2., a_max=2.)  # -2到2，正好是5个数，对应5分类准确率。
         test_truth_a5 = np.clip(test_truth, a_min=-2., a_max=2.)
-        test_preds_a3 = np.clip(test_preds, a_min=-1., a_max=1.)
-        test_truth_a3 = np.clip(test_truth, a_min=-1., a_max=1.)
+
 
         mae = np.mean(
             np.absolute(test_preds - test_truth))  # Average L1 distance between preds and truths，没有指定维度，所以展平成一行求平均值。
         corr = np.corrcoef(test_preds, test_truth)[0][1]  # 返回相关系数矩阵，形状是（2，2），用[0][1]取到相关性，反正矩阵是一个对称矩阵。
         mult_a7 = self.__multiclass_acc(test_preds_a7, test_truth_a7)  # 这三个都是用预测正确的个数除以总的预测数。
         mult_a5 = self.__multiclass_acc(test_preds_a5, test_truth_a5)
-        mult_a3 = self.__multiclass_acc(test_preds_a3, test_truth_a3)
+
 
         non_zeros = np.array([i for i, e in enumerate(test_truth) if e != 0])  # 取出test_truth不是0的索引
         non_zeros_binary_truth = (test_truth[non_zeros] > 0)  # 得到的是一行bool值，test_truth>0的是true，否则是false
@@ -66,7 +65,7 @@ class MetricsTop():
             "Mult_acc_5": round(mult_a5, 4),
             "Mult_acc_7": round(mult_a7, 4),
             "MAE": round(mae, 4),
-            "Corr": round(corr, 4)
+            "Corr": round(corr,4)
         }
         return eval_results  # 返回一个字典。
 
@@ -124,8 +123,6 @@ class MetricsTop():
         }
         return eval_results
 
-    def __eval_mosi_regression(self, y_pred, y_true):
-        return self.__eval_mosei_regression(y_pred, y_true)
 
     def getMetics(self, datasetName):
         return self.metrics_dict[datasetName.upper()]

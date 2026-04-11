@@ -39,8 +39,7 @@ class HingeLoss(nn.Module):
         loss_num = 0
 
         for i in range(B):
-            sim_num = sum(sim_mask[
-                              i])  # sim_mask矩阵是bool类型的，形状是B，(B-1)，这里用到了矩阵[]取元素问题，sum（）表示统计出true的元素有多少个,比如i=0时，统计出sim_mask第一行中的true有多少个，i=2时统计第二行的true有多少个，以此类推
+            sim_num = sum(sim_mask[i])  # sim_mask矩阵是bool类型的，形状是B，(B-1)，这里用到了矩阵[]取元素问题，sum（）表示统计出true的元素有多少个,比如i=0时，统计出sim_mask第一行中的true有多少个，i=2时统计第二行的true有多少个，以此类推
             dif_num = B - 1 - sim_num  # 统计出每一行的false有多少个
             if not sim_num or not dif_num:  # 当 sim_num=0或者dif_num=0时，跳出本次循环，也就是说下面的代码不执行了，i重新给值.
                 continue
