@@ -150,7 +150,7 @@ def _run(args, num_workers=4, is_tune=False, from_sena=False):
     # test
     if args.mode == 'test':
         base = Path(r'F:\zhengliuxiangmu\studentxunlianjieguo')
-        best_path = base / 'mosi' / 'best_model.pth'
+        best_path = base /  args.dataset_name / 'best_model.pth'
         model.load_state_dict(torch.load(best_path),strict=False)  # 加载保存的模型。best_path = os.path.join(save_dir, "best_model.pth")
         results = trainer.do_test(model, dataloader['test'], mode="TEST")
         sys.stdout.flush()  # 把还没显示的输出内容立刻打印出来，不再等待
