@@ -1,8 +1,6 @@
 __all__ = ['ATIO']
 
 from StudentModel.student import studentmodel
-from TeacherModel import *
-from StudentModel  import *
 
 
 class ATIO():

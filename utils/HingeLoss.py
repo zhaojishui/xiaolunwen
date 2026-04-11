@@ -9,8 +9,7 @@ class HingeLoss(nn.Module):
     def compute_cosine(self, x, y):
         # x = self.compute_compact_s(x)
         # y = self.compute_compact_s(y)
-        x_norm = torch.sqrt(
-            torch.sum(torch.pow(x, 2), 1) + 1e-8)  # torch.sum求和时dim=1，如果没有dim=1，那么他会把所有元素加起来得到一个数，加上1e-8：防止数值为 0
+        x_norm = torch.sqrt(torch.sum(torch.pow(x, 2), 1) + 1e-8)  # torch.sum求和时dim=1，如果没有dim=1，那么他会把所有元素加起来得到一个数，加上1e-8：防止数值为 0
         x_norm = torch.max(x_norm, 1e-8 * torch.ones_like(x_norm))  # 防止范数过小，避免后面除以 0，
         y_norm = torch.sqrt(torch.sum(torch.pow(y, 2), 1) + 1e-8)
         y_norm = torch.max(y_norm, 1e-8 * torch.ones_like(y_norm))

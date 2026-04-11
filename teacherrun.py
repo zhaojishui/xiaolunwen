@@ -1,7 +1,6 @@
 import logging
 import os
 import torch.nn.functional as F
-import numpy as np
 import torch
 import torch.nn as nn
 from torch import optim
@@ -37,21 +36,9 @@ class studentmodel():
 
         optimizer = optim.Adam(params, lr=self.args.learning_rate)
         scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=self.args.patience)
-
-
-        if return_epoch_results:
-            epoch_results = {
-                'train': [],
-                'valid': [],
-                'test': []
-            }
-        min_or_max = 'min' if self.args.KeyEval in [
-            'Loss'] else 'max'  # ['Loss']是一个列表，self.args.KeyEval如果有Loss，则 min_or_max = 'min'
-        best_valid = 1 if min_or_max == 'min' else 0
-#0是学生，1是老师。
         net = []
         net_teacher = model[1]
-        net_student=model[0]
+        net_student=model[0]##0是学生，1是老师。
         net.append(net_student)#net[0]是学生，
         net.append(net_teacher)#net[1]是老师
         model = net
@@ -139,7 +126,6 @@ class studentmodel():
                 )
             # validation
                 val_results = self.do_test(model[0], dataloader['valid'], mode="VAL")
-
                 #cur_valid = val_results[self.args.KeyEval]
                 scheduler.step(val_results['Loss'])
             # save each epoch model
@@ -150,15 +136,6 @@ class studentmodel():
                     best_valid = val_results['Loss']
                     best_epoch = epoch + 1
 
-
-
-            # if return_epoch_results:
-            #     train_results["Loss"] = train_loss
-            #     epoch_results['train'].append(train_results)
-            #     epoch_results['valid'].append(val_results)
-            #     test_results = self.do_test(model, dataloader['test'], mode="TEST")
-            #     epoch_results['test'].append(test_results)
-            # early stop
             if epoch - best_epoch >= self.args.early_stop:
                 logger.info(f"Early stop at epoch {epoch + 1}")
                 break
@@ -175,15 +152,6 @@ class studentmodel():
         y_pred, y_true = [], []
 
         eval_loss = 0.0
-        if return_sample_results:
-            ids, sample_results = [], []
-            all_labels = []
-            features = {
-                "Feature_t": [],
-                "Feature_a": [],
-                "Feature_v": [],
-                "Feature_f": [],
-            }
 
         with torch.no_grad():
             with tqdm(dataloader) as td:
@@ -209,13 +177,4 @@ class studentmodel():
         eval_results = self.metrics(pred, true)
         eval_results["Loss"] = round(eval_loss, 4)  # 保留eval_loss的4位小数。
         logger.info(f"{mode}-({self.args.model_name}) >> {dict_to_str(eval_results)}")
-
-        if return_sample_results:
-            eval_results["Ids"] = ids
-            eval_results["SResults"] = sample_results
-            for k in features.keys():
-                features[k] = np.concatenate(features[k], axis=0)
-            eval_results['Features'] = features
-            eval_results['Labels'] = all_labels
-
         return eval_results

@@ -1,10 +1,7 @@
 import json
 import os
 from pathlib import Path
-
-import yaml
 from easydict import EasyDict as edict
-
 
 def get_config_regression(model_name, dataset_name, config_file=""):
     """

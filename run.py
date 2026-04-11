@@ -2,7 +2,6 @@ import gc
 import logging
 import os
 import time
-from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
@@ -13,9 +12,7 @@ from pathlib import Path
 from utils.functions import assign_gpu, setup_seed
 from StudentModel import student
 from TeacherModel import teacher
-from utils.metric import softmax
 import sys
-from teacherrun import studentmodel
 from datetime import datetime
 
 now = datetime.now()
@@ -25,9 +22,7 @@ formatted_now = str(formatted_now) + " - "  # 字符串拼接
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # 固定写法，固定 GPU 编号顺序，避免多卡环境下设备映射混乱
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:2"  # 固定写法，强制 cuBLAS 使用确定性算法，提高实验结果可复现性
-logger = logging.getLogger(
-    'MMSA')  # 查找一个名字叫 "MMSA" 的 Logger,如果已经存在 → 直接返回（单例）,如果不存在 → 创建一个新的 Logger 并返回,logging.getLogger是固定写法
-
+logger = logging.getLogger('MMSA')  # 查找一个名字叫 "MMSA" 的 Logger,如果已经存在 → 直接返回（单例）,如果不存在 → 创建一个新的 Logger 并返回,logging.getLogger是固定写法
 
 def _set_logger(log_dir, model_name, dataset_name, verbose_level):
     # base logger,根据传进来的log_dir在加上model_name, dataset_name构造出一条路径，
@@ -37,8 +32,7 @@ def _set_logger(log_dir, model_name, dataset_name, verbose_level):
 
     # file handler，上一段代码建立了一个日志路径，这段代码应用这个日志执行处理操作,
     fh = logging.FileHandler(log_file_path)  # ！！！！！！！！注意log_file_path长什么样，带‘’号
-    fh_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s [%(levelname)s] - %(message)s')  # name是 logger = logging.getLogger('MMSA')中的MMSA
+    fh_formatter = logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(message)s')  # name是 logger = logging.getLogger('MMSA')中的MMSA
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(fh_formatter)
     logger.addHandler(fh)  # MMSA的日志的保存路径是 log_file_path，处理方法是fh
@@ -47,11 +41,9 @@ def _set_logger(log_dir, model_name, dataset_name, verbose_level):
     stream_level = {0: logging.ERROR, 1: logging.INFO, 2: logging.DEBUG}
     ch = logging.StreamHandler()  ## StreamHandler()是写入控制台的。logging.FileHandler是写入对应文件的。
     ch.setLevel(stream_level[verbose_level])
-    ch_formatter = logging.Formatter(
-        '%(name)s - %(message)s')  # 按照 "%(name)s - %(message)s" 的格式打印到终端，%(name)s是建立logging.getLogger(__name__)时所起的名字
+    ch_formatter = logging.Formatter('%(name)s - %(message)s')  # 按照 "%(name)s - %(message)s" 的格式打印到终端，%(name)s是建立logging.getLogger(__name__)时所起的名字
     ch.setFormatter(ch_formatter)
     logger.addHandler(ch)  # MMSA的日志输出到控制台时遵循ch方法
-
     return logger
 
 
@@ -80,8 +72,7 @@ def DLF_run(
         log_dir = Path.home() / "MMSA" / "logs"
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     seeds = seeds if seeds != [] else [1111, 1112, 1113, 1114, 1115]
-    logger = _set_logger(log_dir, model_name, dataset_name,
-                         verbose_level)  # 函数_set_logger的参数在运行DLF_run时被传入，作为DLF_run函数参数的一部分
+    logger = _set_logger(log_dir, model_name, dataset_name,verbose_level)  # 函数_set_logger的参数在运行DLF_run时被传入，作为DLF_run函数参数的一部分
     config_file=str(config_file)
     args = get_config_regression(model_name, dataset_name,config_file)  # 这个函数get_config_regression的参数也作为DLF_run参数的一部分。默认情况下config路径是config_file = Path(__file__).parent / "config" / "config.json"
     args.is_training = is_training  # 上面的model的名字是DLF，args是一个能用点号访问的字典，也能用点号新增键值对，比如这两句代码，运行train代码时args新增属性is_training，值是true

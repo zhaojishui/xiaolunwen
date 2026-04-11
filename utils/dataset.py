@@ -63,9 +63,7 @@ class MMDataset(Dataset):
             self.labels['missing_rate_v'] = missing_rate[2]
 
         else:
-            missing_rate = [
-                self.missing_rate_eval_test * np.ones((len(data[self.mode][self.train_mode + '_labels']), 1)) for i in#用于评估和测试
-                range(3)]
+            missing_rate = [self.missing_rate_eval_test * np.ones((len(data[self.mode][self.train_mode + '_labels']), 1)) for i in range(3)]#用于评估和测试
             self.labels['missing_rate_l'] = missing_rate[0]
             self.labels['missing_rate_a'] = missing_rate[1]
             self.labels['missing_rate_v'] = missing_rate[2]#这里missing_rate本身是一个列表。

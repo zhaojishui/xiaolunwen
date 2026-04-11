@@ -1,4 +1,4 @@
-import numpy as np
+
 from sklearn.metrics import accuracy_score, f1_score
 import numpy as np
 from sklearn.metrics import average_precision_score
@@ -38,8 +38,7 @@ class MetricsTop():
         test_truth_a5 = np.clip(test_truth, a_min=-2., a_max=2.)
 
 
-        mae = np.mean(
-            np.absolute(test_preds - test_truth))  # Average L1 distance between preds and truths，没有指定维度，所以展平成一行求平均值。
+        mae = np.mean(np.absolute(test_preds - test_truth))  # Average L1 distance between preds and truths，没有指定维度，所以展平成一行求平均值。
         corr = np.corrcoef(test_preds, test_truth)[0][1]  # 返回相关系数矩阵，形状是（2，2），用[0][1]取到相关性，反正矩阵是一个对称矩阵。
         mult_a7 = self.__multiclass_acc(test_preds_a7, test_truth_a7)  # 这三个都是用预测正确的个数除以总的预测数。
         mult_a5 = self.__multiclass_acc(test_preds_a5, test_truth_a5)
