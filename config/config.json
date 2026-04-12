@@ -1,9 +1,9 @@
 {
   "datasetCommonParams": {
-    "dataset_root_dir": "D:\\chromexiazai\\DLF\\MOSI&MOSEIdataset",
+    "dataset_root_dir": "/root/autodl-fs",
     "mosi": {
       "aligned": {
-        "featurePath": "MOSI\\Processed\\MOSI-aligned.pkl",
+        "featurePath": "MOSI/Processed/MOSI-aligned.pkl",
         "feature_dims": [768, 5, 20],
         "train_samples": 1284,
         "num_classes": 3,
@@ -12,7 +12,7 @@
       },
 
       "unaligned": {
-        "featurePath": "MOSI\\Processed\\MOSI-unaligned.pkl",
+        "featurePath": "MOSI/Processed/MOSI-unaligned.pkl",
         "feature_dims": [768, 5, 20],
         "train_samples": 1284,
         "num_classes": 3,
@@ -22,7 +22,7 @@
     },
     "mosei": {
       "aligned": {
-        "featurePath": "MOSEI\\Processed\\MOSEI-aligned.pkl",
+        "featurePath": "MOSEI/Processed/MOSEI-aligned.pkl",
         "feature_dims": [768, 74, 35],
         "train_samples": 16326,
         "num_classes": 3,
@@ -30,7 +30,7 @@
         "KeyEval": "Loss"
       },
       "unaligned": {
-        "featurePath": "MOSEI\\Processed\\MOSEI-unaligned.pkl",
+        "featurePath": "MOSEI/Processed/MOSEI-unaligned.pkl",
         "feature_dims": [768, 74, 35],
         "train_samples": 16326,
         "num_classes": 3,
@@ -47,15 +47,15 @@
       "use_bert": true,
       "use_finetune": true,
       "attn_mask": true,
-      "update_epochs": 10
+      "update_epochs": 40
     },
     "datasetParams": {
       "mosi": {
-        "attn_dropout_a": 0.2,
-        "attn_dropout_v": 0.0,
-        "relu_dropout": 0.0,
+        "attn_dropout_a": 0.3,
+        "attn_dropout_v": 0.1,
+        "relu_dropout": 0.1,
         "embed_dropout": 0.2,
-        "res_dropout": 0.0,
+        "res_dropout": 0.1,
         "dst_feature_dim_nheads": [50, 10],
 
         "learning_rate": 0.0001,
@@ -73,11 +73,11 @@
         "pretrained": "bert-base-uncased"
       },
       "mosei": {
-        "attn_dropout_a": 0.0,
-        "attn_dropout_v": 0.0,
-        "relu_dropout": 0.0,
-        "embed_dropout": 0.0,
-        "res_dropout": 0.0,
+        "attn_dropout_a": 0.3,
+        "attn_dropout_v": 0.1,
+        "relu_dropout": 0.1,
+        "embed_dropout": 0.2,
+        "res_dropout": 0.1,
         "dst_feature_dim_nheads": [50, 10],
 
         "learning_rate": 0.0001,
@@ -100,7 +100,7 @@
          "missing_rate_eval_test": 0.5,
           "train_mode": "regression",
           "seed": 1111,
-          "batch_size": 16,
-          "num_workers":0
+          "batch_size": 32,
+          "num_workers":8
   }
   }

@@ -42,7 +42,7 @@ class studentmodel():
         net.append(net_student)#net[0]是学生，
         net.append(net_teacher)#net[1]是老师
         model = net
-        base_save_dir = r'F:\zhengliuxiangmu\studentxunlianjieguo'
+        base_save_dir = r'/studentxunlianjieguo'
         # 生成子文件夹（用数据集名称命名）
         save_dir = os.path.join(base_save_dir, self.args.dataset_name)
         os.makedirs(save_dir, exist_ok=True)
