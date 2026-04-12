@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import torch.nn.functional as F
@@ -69,7 +70,8 @@ class studentmodel():
         os.makedirs(save_dir, exist_ok=True)
         best_valid = float('inf')
         best_epoch = 0
-        num_epochs = self.args.update_epochs=10
+        best_state_dict = copy.deepcopy(net_student.state_dict())
+        num_epochs = self.args.update_epochs
         net_teacher.load_state_dict(net_student.state_dict())
         for epoch in range(num_epochs):
             y_pred, y_true = [], []
@@ -93,19 +95,17 @@ class studentmodel():
                     with torch.no_grad():
                         output_tea = net[1](text, audio, vision)
                     output_stu = net[0](text_m, audio_m, vision_m)
-                    output_stu_full = net[0](text, audio, vision)
+                    with torch.no_grad():
+                        output_stu_full = net[0](text, audio, vision)
                     # task loss
                     loss_task_all = self.criterion(output_stu['output_logit'], labels)#三种模态不变特征和特定特征拼接起来再预测的损失
                     loss_task_c = self.criterion(output_stu['logits_c'], labels)#三种模态不变特征预测的损失
                     loss_task =loss_task_all + 0.5* loss_task_c#损失1
                     logits_missing = output_stu['output_logit']
                     logits_full = output_stu_full['output_logit']
-                    T = 2.0  # 温度（推荐 2~4）
-                    p_missing = F.log_softmax(logits_missing / T, dim=-1)
-                    p_full = F.softmax(logits_full / T, dim=-1)
-                    loss_consistency = F.kl_div(p_missing, p_full, reduction='batchmean') * ( T * T)  # 损失2，同一个样本，在“缺失模态”和“完整模态”两种输入下，模型输出应该一致。
+                    loss_consistency = self._consistency_loss(logits_missing,logits_full)  # 损失2，同一个样本，在“缺失模态”和“完整模态”两种输入下，模型输出应该一致。
 
-                # ort loss L_o
+                    # ort loss L_o
                     if self.args.dataset_name == 'mosi':
                         num = 50
                     elif self.args.dataset_name == 'mosei':
@@ -173,12 +173,16 @@ class studentmodel():
                 if val_results['Loss'] < best_valid:
                     best_valid = val_results['Loss']
                     best_epoch = epoch + 1
-
-            if epoch - best_epoch >= self.args.early_stop:
+                    best_state_dict = copy.deepcopy(net_student.state_dict())
+            if (epoch+1) - best_epoch >= self.args.early_stop:
                 logger.info(f"Early stop at epoch {epoch + 1}")
                 break
         best_path = os.path.join(save_dir, "best_model.pth")
         torch.save(net_student.state_dict(), best_path)
+        if os.path.exists(best_path):
+            os.remove(best_path)
+        torch.save(best_state_dict, best_path)
+        net_student.load_state_dict(best_state_dict)
         best_test = self.do_test(net_student, dataloader['test'], mode="TEST")
         logger.info(f"Best Epoch: {best_epoch}")
         logger.info(f"Best Test: {best_test}")
