@@ -43,6 +43,13 @@ class studentmodel():
             return F.smooth_l1_loss(stu_logits, tea_logits)
         return kd_loss(stu_logits, tea_logits)
 
+    def _consistency_loss(self, logits_missing, logits_full, temperature=2.0):
+        # 同一样本在“完整模态/缺失模态”下输出应一致；回归任务用L1更合适
+        if logits_missing.size(-1) == 1:
+            return F.smooth_l1_loss(logits_missing, logits_full.detach())
+        p_missing = F.log_softmax(logits_missing / temperature, dim=-1)
+        p_full = F.softmax(logits_full.detach() / temperature, dim=-1)
+        return F.kl_div(p_missing, p_full, reduction='batchmean') * (temperature * temperature)
 
     def do_train(self, model, dataloader, return_epoch_results=False):
         # 0: DLF model
@@ -96,8 +103,7 @@ class studentmodel():
                     T = 2.0  # 温度（推荐 2~4）
                     p_missing = F.log_softmax(logits_missing / T, dim=-1)
                     p_full = F.softmax(logits_full / T, dim=-1)
-                    loss_consistency = F.kl_div(p_missing, p_full, reduction='batchmean') * (T * T)  # 损失2，同一个样本，在“缺失模态”和“完整模态”两种输入下，模型输出应该一致。
-
+                    loss_consistency = F.kl_div(p_missing, p_full, reduction='batchmean') * ( T * T)  # 损失2，同一个样本，在“缺失模态”和“完整模态”两种输入下，模型输出应该一致。
 
                 # ort loss L_o
                     if self.args.dataset_name == 'mosi':
