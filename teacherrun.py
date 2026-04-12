@@ -35,7 +35,14 @@ class studentmodel():
 
     def update_ema(self, teacher, student):
         for t_param, s_param in zip(teacher.parameters(), student.parameters()):
-            t_param.data = self.ema_decay * t_param.data + (1 - self.ema_decay) * s_param.data
+            t_param.data.mul_(self.ema_decay).add_(s_param.data, alpha=(1 - self.ema_decay))
+
+    def _logit_kd_loss(self, stu_logits, tea_logits):
+        # 当前任务是回归（输出维度=1）时，KL蒸馏没有信息量，改为回归蒸馏更稳定
+        if stu_logits.size(-1) == 1:
+            return F.smooth_l1_loss(stu_logits, tea_logits)
+        return kd_loss(stu_logits, tea_logits)
+
 
     def do_train(self, model, dataloader, return_epoch_results=False):
         # 0: DLF model
@@ -55,7 +62,7 @@ class studentmodel():
         os.makedirs(save_dir, exist_ok=True)
         best_valid = float('inf')
         best_epoch = 0
-        num_epochs=10
+        num_epochs = self.args.update_epochs=10
         net_teacher.load_state_dict(net_student.state_dict())
         for epoch in range(num_epochs):
             y_pred, y_true = [], []
@@ -79,12 +86,17 @@ class studentmodel():
                     with torch.no_grad():
                         output_tea = net[1](text, audio, vision)
                     output_stu = net[0](text_m, audio_m, vision_m)
-
+                    output_stu_full = net[0](text, audio, vision)
                     # task loss
                     loss_task_all = self.criterion(output_stu['output_logit'], labels)#三种模态不变特征和特定特征拼接起来再预测的损失
                     loss_task_c = self.criterion(output_stu['logits_c'], labels)#三种模态不变特征预测的损失
                     loss_task =loss_task_all + 0.5* loss_task_c#损失1
-
+                    logits_missing = output_stu['output_logit']
+                    logits_full = output_stu_full['output_logit']
+                    T = 2.0  # 温度（推荐 2~4）
+                    p_missing = F.log_softmax(logits_missing / T, dim=-1)
+                    p_full = F.softmax(logits_full / T, dim=-1)
+                    loss_consistency = F.kl_div(p_missing, p_full, reduction='batchmean') * (T * T)  # 损失2，同一个样本，在“缺失模态”和“完整模态”两种输入下，模型输出应该一致。
 
 
                 # ort loss L_o
@@ -92,46 +104,36 @@ class studentmodel():
                         num = 50
                     elif self.args.dataset_name == 'mosei':
                         num = 10
-                    cosine_similarity_s_c_l = self.cosine(output_stu['s_l'].reshape(-1, num),output_stu['c_l'].reshape(-1, num),torch.tensor([-1]).cuda())  # 拉开语言模态的特定特征和不变特征的距离，让它们不相似。
-                    cosine_similarity_s_c_v = self.cosine(output_stu['s_v'].reshape(-1, num),output_stu['c_v'].reshape(-1, num), torch.tensor([-1]).cuda())
-                    cosine_similarity_s_c_a = self.cosine(output_stu['s_a'].reshape(-1, num),output_stu['c_a'].reshape(-1, num), torch.tensor([-1]).cuda())
+                    s_l = output_stu['s_l'].reshape(-1, num)
+                    c_l = output_stu['c_l'].reshape(-1, num)
+                    s_v = output_stu['s_v'].reshape(-1, num)
+                    c_v = output_stu['c_v'].reshape(-1, num)
+                    s_a = output_stu['s_a'].reshape(-1, num)
+                    c_a = output_stu['c_a'].reshape(-1, num)
+                    target_neg_l = labels.new_full((s_l.size(0),), -1.0)
+                    target_neg_v = labels.new_full((s_v.size(0),), -1.0)
+                    target_neg_a = labels.new_full((s_a.size(0),), -1.0)
+                    cosine_similarity_s_c_l = self.cosine(s_l, c_l, target_neg_l)  # 拉开语言模态的特定特征和不变特征的距离，让它们不相似。
+                    cosine_similarity_s_c_v = self.cosine(s_v, c_v, target_neg_v)
+                    cosine_similarity_s_c_a = self.cosine(s_a, c_a, target_neg_a)
                     loss_ort = cosine_similarity_s_c_l + cosine_similarity_s_c_v + cosine_similarity_s_c_a#损失3
 
                     if epoch < self.warmup_epoch:
-                        total_loss = loss_task + 0.1 * loss_ort
-
+                        total_loss = loss_task + (loss_ort * 0.1) + 0.2 * loss_consistency
                     else:
-                        # ⭐ 渐进蒸馏权重（关键！）
-                        progress = (epoch - self.warmup_epoch) / (num_epochs - self.warmup_epoch)
-
-                        alpha = 0.2 * progress  # logit KD
-                        beta = 0.4 * progress  # feature KD
-
-                        # ⭐ shared feature 蒸馏
-                        stu_feats = [
-                            output_stu['c_l'], output_stu['c_v'], output_stu['c_a'],
-                            output_stu['s_l'], output_stu['s_v'], output_stu['s_a']
-                        ]
-
-                        tea_feats = [
-                            output_tea['c_l'], output_tea['c_v'], output_tea['c_a'],
-                            output_tea['s_l'], output_tea['s_v'], output_tea['s_a']
-                        ]
-
-                        loss_feat_kd = feature_distillation_loss(stu_feats, tea_feats)
-                        tea_prob = torch.softmax(output_tea['output_logit'], dim=-1)
-                        confidence = tea_prob.max(dim=-1)[0]
-
-                        mask = (confidence > 0.7).float().unsqueeze(1)
-
-                        loss_logit_kd = (kd_loss(output_stu['output_logit'], output_tea['output_logit']) * mask).mean()
-
-                        total_loss = (
-                                loss_task
-                                + 0.1 * loss_ort
-                                + beta * loss_feat_kd
-                                + alpha * loss_logit_kd
-                        )
+                        progress = (epoch - self.warmup_epoch) / max((num_epochs - self.warmup_epoch), 1)
+                        alpha = 0.3 * progress
+                        beta = 0.05 * progress
+                        stu_feats = [output_stu['s_l'], output_stu['s_v'], output_stu['s_a'], output_stu['c_l'],
+                                     output_stu['c_v'], output_stu['c_a']]
+                        tea_feats = [output_tea['s_l'], output_tea['s_v'], output_tea['s_a'], output_tea['c_l'],
+                                     output_tea['c_v'], output_tea['c_a']]
+                        loss_feat_kd = feature_distillation_loss(stu_feats, tea_feats)  # 损失4
+                        # 回归任务中使用误差感知权重，而不是softmax置信度
+                        reg_weight = torch.exp(-torch.abs(output_tea['output_logit'].detach() - labels))
+                        loss_logit_kd = (self._logit_kd_loss(output_stu['output_logit'],
+                                                             output_tea['output_logit']) * reg_weight.mean())
+                        total_loss = loss_task + (loss_ort * 0.1) + beta * loss_feat_kd + alpha * loss_logit_kd + 0.2 * loss_consistency
                     total_loss.backward()
                     if self.args.grad_clip != -1.0:
                         params = list(model[0].parameters())
