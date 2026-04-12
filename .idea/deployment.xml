@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="root@connect.nmb1.seetacloud.com:30892 password" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="root@connect.nmb1.seetacloud.com:44519 password" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
       <paths name="root@connect.bjb1.seetacloud.com:21113 password">
         <serverdata>
@@ -17,6 +17,13 @@
         </serverdata>
       </paths>
       <paths name="root@connect.nmb1.seetacloud.com:30892 password">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/root/autodl-tmp/zhengliuxiangmu" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="root@connect.nmb1.seetacloud.com:44519 password">
         <serverdata>
           <mappings>
             <mapping deploy="/root/autodl-tmp/zhengliuxiangmu" local="$PROJECT_DIR$" />

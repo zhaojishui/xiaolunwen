@@ -29,6 +29,13 @@ class studentmodel():
         self.metrics = MetricsTop(args.train_mode).getMetics(args.dataset_name)#MetricsTop(args.train_mode)相当于初始化类MetricsTop的对象，然后由对象去调用类的方法getMetics
         self.MSE = MSE()#在另一个类的初始化方法里面，可以实例化其他的类并创建类的对象。
         self.sim_loss = HingeLoss()
+        # ⭐ 新增：EMA参数
+        self.ema_decay = 0.995
+        self.warmup_epoch = 4  # ⭐ 延迟蒸馏
+
+    def update_ema(self, teacher, student):
+        for t_param, s_param in zip(teacher.parameters(), student.parameters()):
+            t_param.data = self.ema_decay * t_param.data + (1 - self.ema_decay) * s_param.data
 
     def do_train(self, model, dataloader, return_epoch_results=False):
         # 0: DLF model
@@ -48,8 +55,8 @@ class studentmodel():
         os.makedirs(save_dir, exist_ok=True)
         best_valid = float('inf')
         best_epoch = 0
-
         num_epochs=10
+        net_teacher.load_state_dict(net_student.state_dict())
         for epoch in range(num_epochs):
             y_pred, y_true = [], []
             net[1].eval()  # 老师
@@ -72,18 +79,13 @@ class studentmodel():
                     with torch.no_grad():
                         output_tea = net[1](text, audio, vision)
                     output_stu = net[0](text_m, audio_m, vision_m)
-                    output_stu_full=net[0](text,audio,vision)
+
                     # task loss
                     loss_task_all = self.criterion(output_stu['output_logit'], labels)#三种模态不变特征和特定特征拼接起来再预测的损失
                     loss_task_c = self.criterion(output_stu['logits_c'], labels)#三种模态不变特征预测的损失
                     loss_task =loss_task_all + 0.5* loss_task_c#损失1
 
-                    logits_missing = output_stu['output_logit']
-                    logits_full = output_stu_full['output_logit']
-                    T = 2.0  # 温度（推荐 2~4）
-                    p_missing = F.log_softmax(logits_missing / T, dim=-1)
-                    p_full = F.softmax(logits_full / T, dim=-1)
-                    loss_consistency = F.kl_div(p_missing, p_full, reduction='batchmean') * (T * T)#损失2，同一个样本，在“缺失模态”和“完整模态”两种输入下，模型输出应该一致。
+
 
                 # ort loss L_o
                     if self.args.dataset_name == 'mosi':
@@ -95,21 +97,49 @@ class studentmodel():
                     cosine_similarity_s_c_a = self.cosine(output_stu['s_a'].reshape(-1, num),output_stu['c_a'].reshape(-1, num), torch.tensor([-1]).cuda())
                     loss_ort = cosine_similarity_s_c_l + cosine_similarity_s_c_v + cosine_similarity_s_c_a#损失3
 
-                    stu_feats = [output_stu['s_l'], output_stu['s_v'], output_stu['s_a'], output_stu['c_l'],
-                             output_stu['c_v'], output_stu['c_a']]
-                    tea_feats = [output_tea['s_l'], output_tea['s_v'], output_tea['s_a'], output_tea['c_l'],
-                             output_tea['c_v'], output_tea['c_a']]
-                    loss_feat_kd = feature_distillation_loss(stu_feats, tea_feats)#损失4
-                # 逻辑蒸馏 (Logit Distillation)
-                    loss_logit_kd = kd_loss(output_stu['output_logit'], output_tea['output_logit'])#损失5
-                # --- 7. 总损失回传 ---
-                    # 0.1 和 0.5 为蒸馏超参，你可以根据实验结果调整 (也可以写进 args 里)
-                    total_loss = loss_task + ( loss_ort * 0.1) + 0.05 * loss_feat_kd + 0.3 * loss_logit_kd+0.2 * loss_consistency
+                    if epoch < self.warmup_epoch:
+                        total_loss = loss_task + 0.1 * loss_ort
+
+                    else:
+                        # ⭐ 渐进蒸馏权重（关键！）
+                        progress = (epoch - self.warmup_epoch) / (num_epochs - self.warmup_epoch)
+
+                        alpha = 0.2 * progress  # logit KD
+                        beta = 0.4 * progress  # feature KD
+
+                        # ⭐ shared feature 蒸馏
+                        stu_feats = [
+                            output_stu['c_l'], output_stu['c_v'], output_stu['c_a'],
+                            output_stu['s_l'], output_stu['s_v'], output_stu['s_a']
+                        ]
+
+                        tea_feats = [
+                            output_tea['c_l'], output_tea['c_v'], output_tea['c_a'],
+                            output_tea['s_l'], output_tea['s_v'], output_tea['s_a']
+                        ]
+
+                        loss_feat_kd = feature_distillation_loss(stu_feats, tea_feats)
+                        tea_prob = torch.softmax(output_tea['output_logit'], dim=-1)
+                        confidence = tea_prob.max(dim=-1)[0]
+
+                        mask = (confidence > 0.7).float().unsqueeze(1)
+
+                        loss_logit_kd = (kd_loss(output_stu['output_logit'], output_tea['output_logit']) * mask).mean()
+
+                        total_loss = (
+                                loss_task
+                                + 0.1 * loss_ort
+                                + beta * loss_feat_kd
+                                + alpha * loss_logit_kd
+                        )
                     total_loss.backward()
                     if self.args.grad_clip != -1.0:
                         params = list(model[0].parameters())
                         nn.utils.clip_grad_value_(params, self.args.grad_clip)
                     optimizer.step()
+                    # ⭐ 只在前期更新 teacher（防止后期过拟合）
+                    if epoch < 6:
+                        self.update_ema(net[1], net[0])
                     train_loss += total_loss.item()  # train_loss是累加的
                     y_pred.append(output_stu['output_logit'].cpu())
                     y_true.append(labels.cpu())#什么时候for循环退出，也就是把某个数据集中用于train的数据全部摸了一遍。

@@ -52,10 +52,10 @@
     "datasetParams": {
       "mosi": {
         "attn_dropout_a": 0.3,
-        "attn_dropout_v": 0.1,
-        "relu_dropout": 0.1,
-        "embed_dropout": 0.2,
-        "res_dropout": 0.1,
+        "attn_dropout_v": 0.3,
+        "relu_dropout": 0.3,
+        "embed_dropout": 0.3,
+        "res_dropout": 0.3,
         "dst_feature_dim_nheads": [50, 10],
 
         "learning_rate": 0.0001,
