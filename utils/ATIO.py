@@ -1,13 +1,13 @@
 __all__ = ['ATIO']
 
 from StudentModel.student import studentmodel
+from TeacherModel.teacher import teachermodel
 
 
 class ATIO():
     def __init__(self):
         self.TRAIN_MAP = {
-            'STUDENT': studentmodel,
-
+            'STUDENT': studentmodel
         }
 
     # 修改为正确的映射

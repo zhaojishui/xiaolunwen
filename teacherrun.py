@@ -9,9 +9,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from utils.metric import MetricsTop, dict_to_str
 from utils.HingeLoss import HingeLoss
-from utils.loss import feature_distillation_loss
-from utils.loss import kd_loss
 logger = logging.getLogger('MMSA')
+from utils.loss import feature_distillation_loss, kd_loss, diff_loss
 class MSE(nn.Module):
     def __init__(self):
         super(MSE, self).__init__()
@@ -34,9 +33,7 @@ class studentmodel():
         self.ema_decay = 0.995
         self.warmup_epoch = 4  # ⭐ 延迟蒸馏
 
-    def update_ema(self, teacher, student):
-        for t_param, s_param in zip(teacher.parameters(), student.parameters()):
-            t_param.data.mul_(self.ema_decay).add_(s_param.data, alpha=(1 - self.ema_decay))
+
 
     def _logit_kd_loss(self, stu_logits, tea_logits):
         # 当前任务是回归（输出维度=1）时，KL蒸馏没有信息量，改为回归蒸馏更稳定
@@ -64,18 +61,30 @@ class studentmodel():
         net.append(net_student)#net[0]是学生，
         net.append(net_teacher)#net[1]是老师
         model = net
-        base_save_dir = r'/studentxunlianjieguo'
+        base_save_dir = r'studentxunlianjieguo'
         # 生成子文件夹（用数据集名称命名）
         save_dir = os.path.join(base_save_dir, self.args.dataset_name)
         os.makedirs(save_dir, exist_ok=True)
-        best_valid = float('inf')
+        best_valid=float('inf')
         best_epoch = 0
         best_state_dict = copy.deepcopy(net_student.state_dict())
         num_epochs = self.args.update_epochs
-        net_teacher.load_state_dict(net_student.state_dict())
+        teacher_weights_path = os.path.join('teacher_best_weights', self.args.dataset_name,
+                                            "best_teacher_full_data.pth")
+        net_teacher.load_state_dict(torch.load(teacher_weights_path))
+        for param in net_teacher.parameters():
+            param.requires_grad = False
+        from copy import deepcopy
+        ema_teacher = deepcopy(net_teacher)
+        for param in ema_teacher.parameters():
+            param.requires_grad = False
+        ema_decay = 0.995
+
         for epoch in range(num_epochs):
             y_pred, y_true = [], []
             net[1].eval()  # 老师
+            for param in net_teacher.parameters():
+                param.requires_grad = False
             net[0].train()  # 学生
             train_loss = 0.0
 
@@ -95,82 +104,70 @@ class studentmodel():
                     with torch.no_grad():
                         output_tea = net[1](text, audio, vision)
                     output_stu = net[0](text_m, audio_m, vision_m)
-                    with torch.no_grad():
-                        output_stu_full = net[0](text, audio, vision)
+
                     # task loss
                     loss_task_all = self.criterion(output_stu['output_logit'], labels)#三种模态不变特征和特定特征拼接起来再预测的损失
                     loss_task_c = self.criterion(output_stu['logits_c'], labels)#三种模态不变特征预测的损失
                     loss_task =loss_task_all + 0.5* loss_task_c#损失1
-                    logits_missing = output_stu['output_logit']
-                    logits_full = output_stu_full['output_logit']
-                    loss_consistency = self._consistency_loss(logits_missing,logits_full)  # 损失2，同一个样本，在“缺失模态”和“完整模态”两种输入下，模型输出应该一致。
+
 
                     # ort loss L_o
-                    if self.args.dataset_name == 'mosi':
-                        num = 50
-                    elif self.args.dataset_name == 'mosei':
-                        num = 10
-                    s_l = output_stu['s_l'].reshape(-1, num)
-                    c_l = output_stu['c_l'].reshape(-1, num)
-                    s_v = output_stu['s_v'].reshape(-1, num)
-                    c_v = output_stu['c_v'].reshape(-1, num)
-                    s_a = output_stu['s_a'].reshape(-1, num)
-                    c_a = output_stu['c_a'].reshape(-1, num)
-                    target_neg_l = labels.new_full((s_l.size(0),), -1.0)
-                    target_neg_v = labels.new_full((s_v.size(0),), -1.0)
-                    target_neg_a = labels.new_full((s_a.size(0),), -1.0)
-                    cosine_similarity_s_c_l = self.cosine(s_l, c_l, target_neg_l)  # 拉开语言模态的特定特征和不变特征的距离，让它们不相似。
-                    cosine_similarity_s_c_v = self.cosine(s_v, c_v, target_neg_v)
-                    cosine_similarity_s_c_a = self.cosine(s_a, c_a, target_neg_a)
-                    loss_ort = cosine_similarity_s_c_l + cosine_similarity_s_c_v + cosine_similarity_s_c_a#损失3
+                    dim_l = output_stu['s_l'].size(-1)
+                    dim_v = output_stu['s_v'].size(-1)
+                    dim_a = output_stu['s_a'].size(-1)
+
+                    s_l = output_stu['s_l'].contiguous().view(-1, dim_l)
+                    c_l = output_stu['c_l'].contiguous().view(-1, dim_l)
+                    s_v = output_stu['s_v'].contiguous().view(-1, dim_v)
+                    c_v = output_stu['c_v'].contiguous().view(-1, dim_v)
+                    s_a = output_stu['s_a'].contiguous().view(-1, dim_a)
+                    c_a = output_stu['c_a'].contiguous().view(-1, dim_a)
+
+                    # 使用 utils/loss.py 中正确的 diff_loss 让它们正交（相互独立）
+                    loss_ort = diff_loss(s_l, c_l) + diff_loss(s_v, c_v) + diff_loss(s_a, c_a)
 
                     if epoch < self.warmup_epoch:
-                        total_loss = loss_task + (loss_ort * 0.1) + 0.2 * loss_consistency
+                        total_loss = loss_task + (loss_ort * 0.1)
                     else:
-                        progress = (epoch - self.warmup_epoch) / max((num_epochs - self.warmup_epoch), 1)
-                        alpha = 0.3 * progress
-                        beta = 0.05 * progress
-                        stu_feats = [output_stu['s_l'], output_stu['s_v'], output_stu['s_a'], output_stu['c_l'],
-                                     output_stu['c_v'], output_stu['c_a']]
-                        tea_feats = [output_tea['s_l'], output_tea['s_v'], output_tea['s_a'], output_tea['c_l'],
-                                     output_tea['c_v'], output_tea['c_a']]
-                        loss_feat_kd = feature_distillation_loss(stu_feats, tea_feats)  # 损失4
+                        stu_feats = [ output_stu['c_l'],output_stu['c_v'], output_stu['c_a']]
+                        tea_feats = [ output_tea['c_l'],output_tea['c_v'], output_tea['c_a']]
+                        loss_feat_kd = feature_distillation_loss(stu_feats, tea_feats)  #
                         # 回归任务中使用误差感知权重，而不是softmax置信度
                         reg_weight = torch.exp(-torch.abs(output_tea['output_logit'].detach() - labels))
                         loss_logit_kd = (self._logit_kd_loss(output_stu['output_logit'],
                                                              output_tea['output_logit']) * reg_weight.mean())
-                        total_loss = loss_task + (loss_ort * 0.1) + beta * loss_feat_kd + alpha * loss_logit_kd + 0.2 * loss_consistency
-                    total_loss.backward()
+                        total_loss = loss_task + (loss_ort * 0.1) + 0.3 * loss_feat_kd + 0.1 * loss_logit_kd
+                    total_loss.backward()#反向传播
                     if self.args.grad_clip != -1.0:
                         params = list(model[0].parameters())
                         nn.utils.clip_grad_value_(params, self.args.grad_clip)
-                    optimizer.step()
+                    optimizer.step()#更新梯度
                     # ⭐ 只在前期更新 teacher（防止后期过拟合）
-                    if epoch < 6:
-                        self.update_ema(net[1], net[0])
+
                     train_loss += total_loss.item()  # train_loss是累加的
                     y_pred.append(output_stu['output_logit'].cpu())
                     y_true.append(labels.cpu())#什么时候for循环退出，也就是把某个数据集中用于train的数据全部摸了一遍。
+                    for t_param, s_param in zip(ema_teacher.parameters(), net_student.parameters()):
+                        t_param.data = ema_decay * t_param.data + (1 - ema_decay) * s_param.data
 
-
-                train_loss = train_loss / len(dataloader['train'])#len(dataloader) = batch 数量
-                pred, true = torch.cat(y_pred), torch.cat(y_true)
-                train_results = self.metrics(pred, true)
-                logger.info(
-                    f">> Epoch: {epoch+1} "
-                    f"TRAIN -({self.args.model_name}) [{epoch+1}/{self.args.cur_seed}] "
-                    f">> total_loss: {round(train_loss, 4)} "
-                    f"{dict_to_str(train_results)}"
-                )
+            train_loss = train_loss / len(dataloader['train'])#len(dataloader) = batch 数量
+            pred, true = torch.cat(y_pred), torch.cat(y_true)
+            train_results = self.metrics(pred, true)
+            logger.info(
+                f">> Epoch: {epoch+1} "
+                f"TRAIN -({self.args.model_name}) [{epoch+1}/{self.args.cur_seed}] "
+                f">> total_loss: {round(train_loss, 4)} "
+                f"{dict_to_str(train_results)}"
+            )
             # validation
-                val_results = self.do_test(model[0], dataloader['valid'], mode="VAL")
+            val_results = self.do_test(model[0], dataloader['valid'], mode="VAL")
                 #cur_valid = val_results[self.args.KeyEval]
-                scheduler.step(val_results['Loss'])
+            scheduler.step(val_results['Loss'])
             # save each epoch model
                 #torch.save(model[0].state_dict(),
                        #r'F:\zhengliuxiangmu\studentxunlianjieguo' + str(self.args.dataset_name) + '_' + str(epoch+1) + '.pth')#？修改
             # save best model
-                if val_results['Loss'] < best_valid:
+            if val_results['Loss'] < best_valid:
                     best_valid = val_results['Loss']
                     best_epoch = epoch + 1
                     best_state_dict = copy.deepcopy(net_student.state_dict())
@@ -178,9 +175,6 @@ class studentmodel():
                 logger.info(f"Early stop at epoch {epoch + 1}")
                 break
         best_path = os.path.join(save_dir, "best_model.pth")
-        torch.save(net_student.state_dict(), best_path)
-        if os.path.exists(best_path):
-            os.remove(best_path)
         torch.save(best_state_dict, best_path)
         net_student.load_state_dict(best_state_dict)
         best_test = self.do_test(net_student, dataloader['test'], mode="TEST")
