@@ -159,7 +159,7 @@ class studentmodel(nn.Module):
 
         return TransformerEncoder(embed_dim=embed_dim,  # 这里的TransformerEncoder是一个类，是自己编写的，所以参数不遵循标准的TransformerEncoder
                                   num_heads=self.num_heads,  # 10
-                                  layers=max(self.layers, layers),  # 2
+                                  layers=max(self.layers, layers),  # 1
                                   attn_dropout=attn_dropout,  # 0.5
                                   relu_dropout=self.relu_dropout,  # 0
                                   res_dropout=self.res_dropout,  # 0

@@ -43,19 +43,19 @@
     "commonParams": {
       "need_data_aligned": false,
       "need_model_aligned": true,
-      "early_stop": 10,
+      "early_stop": 40,
       "use_bert": true,
       "use_finetune": true,
       "attn_mask": true,
-      "update_epochs": 20
+      "update_epochs": 40
     },
     "datasetParams": {
       "mosi": {
-        "attn_dropout_a": 0.3,
-        "attn_dropout_v": 0.3,
-        "relu_dropout": 0.3,
-        "embed_dropout": 0.3,
-        "res_dropout": 0.3,
+        "attn_dropout_a": 0.6,
+        "attn_dropout_v": 0.6,
+        "relu_dropout": 0.6,
+        "embed_dropout": 0.6,
+        "res_dropout": 0.6,
         "dst_feature_dim_nheads": [50, 10],
 
         "learning_rate": 0.0001,
@@ -68,7 +68,7 @@
         "output_dropout": 0.5,
         "grad_clip": 0.6,
         "patience": 5,
-        "weight_decay": 1e-4,
+        "weight_decay": 5e-4,
         "transformers": "bert",
         "pretrained": "bert-base-uncased"
       },
@@ -81,7 +81,7 @@
         "dst_feature_dim_nheads": [50, 10],
 
         "learning_rate": 0.0001,
-        "nlevels": 2,
+        "nlevels": 1,
         "conv1d_kernel_size_l": 3,
         "conv1d_kernel_size_a": 3,
         "conv1d_kernel_size_v": 3,
@@ -100,7 +100,7 @@
          "missing_rate_eval_test": 0.5,
           "train_mode": "regression",
           "seed": 1111,
-          "batch_size": 32,
+          "batch_size": 64,
           "num_workers":8
   }
   }

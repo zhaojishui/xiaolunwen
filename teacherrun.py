@@ -9,6 +9,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from utils.metric import MetricsTop, dict_to_str
 from utils.HingeLoss import HingeLoss
+import numpy as np
 logger = logging.getLogger('MMSA')
 from utils.loss import feature_distillation_loss, kd_loss, diff_loss
 class MSE(nn.Module):
@@ -32,8 +33,13 @@ class studentmodel():
         # ⭐ 新增：EMA参数
         self.ema_decay = 0.995
         self.warmup_epoch = 4  # ⭐ 延迟蒸馏
-
-
+        self.kd_ramp_epochs = 4
+        self.feat_kd_max_weight = 0.15
+        self.logit_kd_max_weight = 0.05
+        self.warmup_epoch = 4
+        self.kd_ramp_epochs = 4
+        self.bert_freeze_epochs = 3
+        self.bert_lr_mult = 0.1
 
     def _logit_kd_loss(self, stu_logits, tea_logits):
         # 当前任务是回归（输出维度=1）时，KL蒸馏没有信息量，改为回归蒸馏更稳定
@@ -49,12 +55,32 @@ class studentmodel():
         p_full = F.softmax(logits_full.detach() / temperature, dim=-1)
         return F.kl_div(p_missing, p_full, reduction='batchmean') * (temperature * temperature)
 
+    def _get_kd_scale(self,epoch):
+        if epoch < self.warmup_epoch:
+            return 0.0
+        progress = (epoch - self.warmup_epoch + 1) / max(1, self.kd_ramp_epochs)
+        return min(1.0, max(0.0, progress))
+
+    def _set_bert_trainable(self, model, trainable):
+        if not hasattr(model, "text_model"):
+            return
+        for param in model.text_model.parameters():
+            param.requires_grad = trainable
+
+
     def do_train(self, model, dataloader, return_epoch_results=False):
         # 0: DLF model
-        params = model[0].parameters()
-
-        optimizer = optim.Adam(params, lr=self.args.learning_rate)
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=self.args.patience)
+        named_params = list(model[0].named_parameters())
+        bert_params = [p for n, p in named_params if "text_model" in n]
+        other_params = [p for n, p in named_params if "text_model" not in n]
+        optimizer = optim.Adam(
+            [
+                {"params": other_params, "lr": self.args.learning_rate},
+                {"params": bert_params, "lr": self.args.learning_rate * self.bert_lr_mult},
+            ],
+            weight_decay=self.args.weight_decay
+        )
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=self.args.patience)
         net = []
         net_teacher = model[1]
         net_student=model[0]##0是学生，1是老师。
@@ -75,16 +101,17 @@ class studentmodel():
         for param in net_teacher.parameters():
             param.requires_grad = False
         from copy import deepcopy
-        ema_teacher = deepcopy(net_teacher)
-        for param in ema_teacher.parameters():
+        ema_student = deepcopy(net_student)
+        for param in ema_student.parameters():
             param.requires_grad = False
-        ema_decay = 0.995
-
+        ema_decay = self.ema_decay
+        ema_student.eval()
         for epoch in range(num_epochs):
             y_pred, y_true = [], []
             net[1].eval()  # 老师
             for param in net_teacher.parameters():
                 param.requires_grad = False
+            self._set_bert_trainable(net_student, epoch >= self.bert_freeze_epochs)
             net[0].train()  # 学生
             train_loss = 0.0
 
@@ -126,30 +153,78 @@ class studentmodel():
                     # 使用 utils/loss.py 中正确的 diff_loss 让它们正交（相互独立）
                     loss_ort = diff_loss(s_l, c_l) + diff_loss(s_v, c_v) + diff_loss(s_a, c_a)
 
-                    if epoch < self.warmup_epoch:
-                        total_loss = loss_task + (loss_ort * 0.1)
+                    # 1. 获取当前 epoch 的蒸馏比例 (0.0 ~ 1.0)
+                    kd_scale = self._get_kd_scale(epoch)
+
+                    # ========== 核心修改 1：动态衰减任务损失权重 ==========
+                    # 随着 kd_scale 从 0 增加到 1，task_weight 会从 1.0 平滑下降到 0.2
+                    task_weight = max(1.0 - 0.8 * kd_scale, 0.2)
+
+                    if kd_scale == 0.0:
+                        # 预热期：主要关注任务损失和正交解耦损失
+                        total_loss = task_weight * loss_task + (loss_ort * 0.1)
                     else:
-                        stu_feats = [ output_stu['c_l'],output_stu['c_v'], output_stu['c_a']]
-                        tea_feats = [ output_tea['c_l'],output_tea['c_v'], output_tea['c_a']]
-                        loss_feat_kd = feature_distillation_loss(stu_feats, tea_feats)  #
-                        # 回归任务中使用误差感知权重，而不是softmax置信度
+                        # 准备学生特征
+                        stu_feats = [
+                            output_stu['c_l'], output_stu['c_v'], output_stu['c_a'],
+                            output_stu['s_l'], output_stu['s_v'], output_stu['s_a']
+                        ]
+
+                        # ========== 核心修改 2：给老师的所有特征加上 detach() ==========
+                        tea_feats = [
+                            output_tea['c_l'].detach(), output_tea['c_v'].detach(), output_tea['c_a'].detach(),
+                            output_tea['s_l'].detach(), output_tea['s_v'].detach(), output_tea['s_a'].detach()
+                        ]
+
+                        # 计算特征蒸馏损失
+                        loss_feat_kd = feature_distillation_loss(stu_feats, tea_feats)
+
+                        # 计算结构一致性损失 (强迫学生特定的模态特征向老师对齐)
+                        loss_structure = (
+                                F.mse_loss(output_stu['s_l'], output_tea['s_l'].detach()) +
+                                F.mse_loss(output_stu['s_v'], output_tea['s_v'].detach()) +
+                                F.mse_loss(output_stu['s_a'], output_tea['s_a'].detach())
+                        )
+
+                        # 计算一致性损失 (老师的 logits 需要 detach)
+                        loss_cons = self._consistency_loss(
+                            output_stu['output_logit'],
+                            output_tea['output_logit'].detach()
+                        )
+
+                        # 计算逻辑蒸馏损失 (使用误差感知权重，老师的 logits 需要 detach)
                         reg_weight = torch.exp(-torch.abs(output_tea['output_logit'].detach() - labels))
                         loss_logit_kd = (self._logit_kd_loss(output_stu['output_logit'],
-                                                             output_tea['output_logit']) * reg_weight.mean())
-                        total_loss = loss_task + (loss_ort * 0.1) + 0.3 * loss_feat_kd + 0.1 * loss_logit_kd
-                    total_loss.backward()#反向传播
+                                                             output_tea['output_logit'].detach()) * reg_weight.mean())
+
+                        loss_feat_kd = torch.mean(loss_feat_kd)
+                        loss_structure = torch.mean(loss_structure)
+
+                        # ========== 核心修改 3：调整最终 Total Loss 的融合 ==========
+                        total_loss = (
+                                task_weight * loss_task  # <--- 使用动态衰减的任务损失权重
+                                + 0.1 * loss_ort  # 正交解耦损失保持恒定
+                                + kd_scale * (
+                                        0.5 * loss_feat_kd +  # 特征对齐 (权重 0.4 -> 0.5)
+                                        0.3 * loss_logit_kd +  # 逻辑对齐 (权重 0.3)
+                                        0.3 * loss_structure +  # 结构对齐 (权重 0.2 -> 0.3)
+                                        0.2 * loss_cons  # 一致性对齐 (权重 0.2)
+                                )
+                        )
+
+                    total_loss.backward()
                     if self.args.grad_clip != -1.0:
                         params = list(model[0].parameters())
-                        nn.utils.clip_grad_value_(params, self.args.grad_clip)
+                        nn.utils.clip_grad_norm_(params, self.args.grad_clip)
                     optimizer.step()#更新梯度
                     # ⭐ 只在前期更新 teacher（防止后期过拟合）
 
                     train_loss += total_loss.item()  # train_loss是累加的
                     y_pred.append(output_stu['output_logit'].cpu())
                     y_true.append(labels.cpu())#什么时候for循环退出，也就是把某个数据集中用于train的数据全部摸了一遍。
-                    for t_param, s_param in zip(ema_teacher.parameters(), net_student.parameters()):
-                        t_param.data = ema_decay * t_param.data + (1 - ema_decay) * s_param.data
-
+                    with torch.no_grad():
+                        for ema_param, s_param in zip(ema_student.parameters(), net_student.parameters()):
+                            ema_param.data.mul_(self.ema_decay).add_(s_param.data, alpha=1 - self.ema_decay)
             train_loss = train_loss / len(dataloader['train'])#len(dataloader) = batch 数量
             pred, true = torch.cat(y_pred), torch.cat(y_true)
             train_results = self.metrics(pred, true)
@@ -160,7 +235,7 @@ class studentmodel():
                 f"{dict_to_str(train_results)}"
             )
             # validation
-            val_results = self.do_test(model[0], dataloader['valid'], mode="VAL")
+            val_results = self.do_test(ema_student, dataloader['valid'], mode="VAL")
                 #cur_valid = val_results[self.args.KeyEval]
             scheduler.step(val_results['Loss'])
             # save each epoch model
@@ -170,7 +245,7 @@ class studentmodel():
             if val_results['Loss'] < best_valid:
                     best_valid = val_results['Loss']
                     best_epoch = epoch + 1
-                    best_state_dict = copy.deepcopy(net_student.state_dict())
+                    best_state_dict = copy.deepcopy(ema_student.state_dict())
             if (epoch+1) - best_epoch >= self.args.early_stop:
                 logger.info(f"Early stop at epoch {epoch + 1}")
                 break
